@@ -83,6 +83,14 @@ var (
 			Buckets:   lagBucket(),
 		}, []string{"namespace", "changefeed"})
 
+	changefeedStatusUpdateCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "ticdc",
+			Subsystem: "owner",
+			Name:      "changefeed_status_update_counter",
+			Help:      "The counter of changefeed status update times",
+		}, []string{"namespace", "changefeed"})
+
 	ownershipCounter = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: "ticdc",
@@ -150,6 +158,8 @@ func InitMetrics(registry *prometheus.Registry) {
 	registry.MustRegister(changefeedTickDuration)
 	registry.MustRegister(changefeedCloseDuration)
 	registry.MustRegister(changefeedIgnoredDDLEventCounter)
+
+	registry.MustRegister(changefeedStatusUpdateCounter)
 }
 
 // lagBucket returns the lag buckets for prometheus metric

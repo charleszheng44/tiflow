@@ -47,6 +47,10 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	defaultStatusUpdateInterval = time.Second * 1
+)
+
 // newSchedulerFromCtx creates a new scheduler from context.
 // This function is factored out to facilitate unit testing.
 func newSchedulerFromCtx(
@@ -119,8 +123,13 @@ type changefeed struct {
 	metricsChangefeedBarrierTsGauge prometheus.Gauge
 	metricsChangefeedTickDuration   prometheus.Observer
 
+	metricsChangeFeedUpdateCount prometheus.Counter
+
 	downstreamObserver observer.Observer
 	observerLastTick   *atomic.Time
+
+	statusUpdateInterval *time.Duration
+	lastStatusUpdateTs   *atomic.Time
 
 	newDDLPuller func(ctx context.Context,
 		replicaConfig *config.ReplicaConfig,
@@ -170,6 +179,8 @@ func newChangefeed(
 		newDDLPuller:          puller.NewDDLPuller,
 		newSink:               newDDLSink,
 		newDownstreamObserver: observer.NewObserver,
+
+		statusUpdateInterval: util.AddressOf(defaultStatusUpdateInterval),
 	}
 	c.newScheduler = newScheduler
 	c.cfg = cfg
@@ -731,6 +742,9 @@ func (c *changefeed) initMetrics() {
 		WithLabelValues(c.id.Namespace, c.id.ID)
 	c.metricsChangefeedTickDuration = changefeedTickDuration.
 		WithLabelValues(c.id.Namespace, c.id.ID)
+
+	c.metricsChangeFeedUpdateCount = changefeedStatusUpdateCounter.
+		WithLabelValues(c.id.Namespace, c.id.ID)
 }
 
 // releaseResources is idempotent.
@@ -976,6 +990,17 @@ func (c *changefeed) updateMetrics(currentTs int64, checkpointTs, resolvedTs mod
 }
 
 func (c *changefeed) updateStatus(checkpointTs, resolvedTs, minTableBarrierTs model.Ts) {
+	if c.lastStatusUpdateTs != nil &&
+		c.statusUpdateInterval != nil &&
+		time.Now().Sub(c.lastStatusUpdateTs.Load()) < *c.statusUpdateInterval {
+		log.Info(
+			"won't update status as insufficient time interval between two updates.",
+			zap.Any("changefeedId", c.id),
+			zap.Any("interval", c.statusUpdateInterval),
+		)
+		return
+	}
+
 	if checkpointTs > resolvedTs {
 		log.Panic("checkpointTs is greater than resolvedTs",
 			zap.Uint64("checkpointTs", checkpointTs),
@@ -1001,6 +1026,11 @@ func (c *changefeed) updateStatus(checkpointTs, resolvedTs, minTableBarrierTs mo
 			}
 			return status, changed, nil
 		})
+	if c.lastStatusUpdateTs == nil {
+		c.lastStatusUpdateTs = atomic.NewTime(time.Time{})
+	}
+	c.lastStatusUpdateTs.Store(time.Now())
+	c.metricsChangeFeedUpdateCount.Inc()
 }
 
 func (c *changefeed) Close(ctx cdcContext.Context) {
